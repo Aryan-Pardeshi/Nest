@@ -4,6 +4,7 @@ from datetime import datetime
 from http import HTTPStatus
 from typing import Literal
 
+from django.db.models.functions import Coalesce
 from django.http import HttpRequest
 from ninja import Field, FilterSchema, Path, Query, Schema
 from ninja.decorators import decorate_view
@@ -29,6 +30,13 @@ PROJECT_SEARCH_FIELDS: dict[str, FieldConfig] = {
 
 router = RouterPaginated(tags=["Projects"])
 
+TIMESTAMP_ORDERING = {
+    "created_at": Coalesce("created_at", "nest_created_at"),
+    "-created_at": Coalesce("created_at", "nest_created_at").desc(),
+    "updated_at": Coalesce("updated_at", "nest_updated_at"),
+    "-updated_at": Coalesce("updated_at", "nest_updated_at").desc(),
+}
+
 
 class ProjectBase(Schema):
     """Base schema for Project (used in list endpoints)."""
@@ -44,6 +52,16 @@ class ProjectBase(Schema):
     def resolve_key(obj: ProjectModel) -> str:
         """Resolve key."""
         return obj.nest_key
+
+    @staticmethod
+    def resolve_created_at(obj: ProjectModel) -> datetime:
+        """Return the source timestamp, or when Nest stored the project."""
+        return obj.created_at or obj.nest_created_at
+
+    @staticmethod
+    def resolve_updated_at(obj: ProjectModel) -> datetime:
+        """Return the source timestamp, or when Nest last stored the project."""
+        return obj.updated_at or obj.nest_updated_at
 
 
 class Project(ProjectBase):
@@ -117,7 +135,8 @@ def list_projects(
     if filters.type is not None:
         queryset = queryset.filter(type__in=filters.type)
 
-    return queryset.order_by(ordering or "-level_raw", "-stars_count", "-forks_count")
+    order = ordering or "-level_raw"
+    return queryset.order_by(TIMESTAMP_ORDERING.get(order, order), "-stars_count", "-forks_count")
 
 
 @router.get(

@@ -1,8 +1,9 @@
-from datetime import datetime
+from datetime import UTC, datetime
 from http import HTTPStatus
 from unittest.mock import MagicMock, patch
 
 import pytest
+from django.db.models.functions import Coalesce
 
 from apps.api.rest.v0.committee import CommitteeDetail, get_committee, list_committees
 
@@ -42,6 +43,27 @@ class TestCommitteeSerializerValidation:
         assert committee.name == committee_data["name"]
         assert committee.updated_at == datetime.fromisoformat(committee_data["updated_at"])
 
+    def test_committee_serializer_uses_nest_timestamps_when_source_is_null(self):
+        """Test null source timestamps fall back to when Nest stored the committee."""
+        stored_at = datetime(2024, 1, 15, tzinfo=UTC)
+        updated_at = datetime(2024, 2, 20, tzinfo=UTC)
+
+        class MockCommittee:
+            def __init__(self):
+                self.created_at = None
+                self.description = "A test committee"
+                self.key = "project"
+                self.name = "Project Committee"
+                self.nest_created_at = stored_at
+                self.nest_key = "project"
+                self.nest_updated_at = updated_at
+                self.updated_at = None
+
+        committee = CommitteeDetail.from_orm(MockCommittee())
+
+        assert committee.created_at == stored_at
+        assert committee.updated_at == updated_at
+
 
 class TestListCommittees:
     """Tests for list_committees endpoint."""
@@ -55,19 +77,23 @@ class TestListCommittees:
 
         result = list_committees(mock_request, ordering=None)
 
-        mock_committee_model.active_committees.order_by.assert_called_with("-created_at")
+        mock_committee_model.active_committees.order_by.assert_called_with(
+            Coalesce("created_at", "nest_created_at").desc()
+        )
         assert result == mock_queryset
 
     @patch("apps.api.rest.v0.committee.CommitteeModel")
     def test_list_committees_with_ordering(self, mock_committee_model):
-        """Test listing committees with custom ordering."""
+        """Test updated_at ordering uses the same Nest timestamp fallback as serialization."""
         mock_request = MagicMock()
         mock_queryset = MagicMock()
         mock_committee_model.active_committees.order_by.return_value = mock_queryset
 
         result = list_committees(mock_request, ordering="updated_at")
 
-        mock_committee_model.active_committees.order_by.assert_called_with("updated_at")
+        mock_committee_model.active_committees.order_by.assert_called_with(
+            Coalesce("updated_at", "nest_updated_at")
+        )
         assert result == mock_queryset
 
 

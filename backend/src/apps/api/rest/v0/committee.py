@@ -4,6 +4,7 @@ from datetime import datetime
 from http import HTTPStatus
 from typing import Literal
 
+from django.db.models.functions import Coalesce
 from django.http import HttpRequest
 from ninja import Path, Query, Schema
 from ninja.decorators import decorate_view
@@ -15,6 +16,13 @@ from apps.api.rest.v0.common import ValidationErrorSchema
 from apps.owasp.models.committee import Committee as CommitteeModel
 
 router = RouterPaginated(tags=["Committees"])
+
+TIMESTAMP_ORDERING = {
+    "created_at": Coalesce("created_at", "nest_created_at"),
+    "-created_at": Coalesce("created_at", "nest_created_at").desc(),
+    "updated_at": Coalesce("updated_at", "nest_updated_at"),
+    "-updated_at": Coalesce("updated_at", "nest_updated_at").desc(),
+}
 
 
 class CommitteeBase(Schema):
@@ -29,6 +37,16 @@ class CommitteeBase(Schema):
     def resolve_key(obj: CommitteeModel) -> str:
         """Resolve key."""
         return obj.nest_key
+
+    @staticmethod
+    def resolve_created_at(obj: CommitteeModel) -> datetime:
+        """Return the source timestamp, or when Nest stored the committee."""
+        return obj.created_at or obj.nest_created_at
+
+    @staticmethod
+    def resolve_updated_at(obj: CommitteeModel) -> datetime:
+        """Return the source timestamp, or when Nest last stored the committee."""
+        return obj.updated_at or obj.nest_updated_at
 
 
 class Committee(CommitteeBase):
@@ -63,7 +81,8 @@ def list_committees(
     ),
 ) -> list[Committee]:
     """Get committees."""
-    return CommitteeModel.active_committees.order_by(ordering or "-created_at")
+    order = ordering or "-created_at"
+    return CommitteeModel.active_committees.order_by(TIMESTAMP_ORDERING.get(order, order))
 
 
 @router.get(

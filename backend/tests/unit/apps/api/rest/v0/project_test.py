@@ -1,11 +1,12 @@
 """Tests for project API."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 from http import HTTPStatus
 from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
+from django.db.models.functions import Coalesce
 from django.http import HttpResponse
 from pydantic import ValidationError
 
@@ -90,6 +91,30 @@ class TestProjectSerializerValidation:
         assert project.type == project_data["type"]
         assert project.updated_at == datetime.fromisoformat(project_data["updated_at"])
 
+    def test_project_serializer_uses_nest_timestamps_when_source_is_null(self) -> None:
+        """Test null source timestamps fall back to when Nest stored the project."""
+        stored_at = datetime(2024, 1, 15, tzinfo=UTC)
+        updated_at = datetime(2024, 2, 20, tzinfo=UTC)
+
+        mock_project = MockProject(
+            {
+                "created_at": None,
+                "description": "A project without source timestamps",
+                "key": "hunting",
+                "level": "incubator",
+                "name": "OWASP Hunting",
+                "nest_created_at": stored_at,
+                "nest_updated_at": updated_at,
+                "type": "other",
+                "updated_at": None,
+            }
+        )
+
+        project = ProjectDetail.from_orm(mock_project)
+
+        assert project.created_at == stored_at
+        assert project.updated_at == updated_at
+
 
 class TestListProjects:
     """Tests for list_projects endpoint."""
@@ -165,7 +190,7 @@ class TestListProjects:
         )
         mock_queryset.filter.assert_called_once_with(level="flagship")
         mock_filtered_queryset.order_by.assert_called_once_with(
-            "created_at", "-stars_count", "-forks_count"
+            Coalesce("created_at", "nest_created_at"), "-stars_count", "-forks_count"
         )
         assert result == mock_filtered_queryset
 
@@ -284,10 +309,30 @@ class TestListProjects:
     @pytest.mark.parametrize(
         ("ordering", "expected_order"),
         [
-            ("created_at", ("created_at", "-stars_count", "-forks_count")),
-            ("-created_at", ("-created_at", "-stars_count", "-forks_count")),
-            ("updated_at", ("updated_at", "-stars_count", "-forks_count")),
-            ("-updated_at", ("-updated_at", "-stars_count", "-forks_count")),
+            (
+                "created_at",
+                (Coalesce("created_at", "nest_created_at"), "-stars_count", "-forks_count"),
+            ),
+            (
+                "-created_at",
+                (
+                    Coalesce("created_at", "nest_created_at").desc(),
+                    "-stars_count",
+                    "-forks_count",
+                ),
+            ),
+            (
+                "updated_at",
+                (Coalesce("updated_at", "nest_updated_at"), "-stars_count", "-forks_count"),
+            ),
+            (
+                "-updated_at",
+                (
+                    Coalesce("updated_at", "nest_updated_at").desc(),
+                    "-stars_count",
+                    "-forks_count",
+                ),
+            ),
         ],
     )
     @patch("apps.api.rest.v0.project.apply_structured_search")
